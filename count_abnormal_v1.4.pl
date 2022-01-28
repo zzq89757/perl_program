@@ -14,10 +14,8 @@
 #--------------------------- about v1.2 -----------------------------------
 #0.关于正常插入片段评价标准
 #本版本采用picard默认使用的 median + 10 * MAD 
-#1.单个脚本即可将MAD算出并同时统计出各种情况的数目并拆分bam文件但需要读取两遍bam
-#2.尽管本程序读取了两次bam文件，但相较上一版本效率仍提升一倍多
-#3.对程序整体速度进行优化，由原来的 20min/GB 提升至 10min/GB
-#4.由于多次使用picard算法对方向进行判断，该版本将其封装为函数，结构更加清晰
+#1.直接提取picard信息内容
+#2.由于多次使用picard算法对方向进行判断，该版本将其封装为函数，结构更加清晰
 use strict;
 use Getopt::Long;
 use POSIX;
@@ -30,7 +28,7 @@ sub usage {
 Description     Count_abnormal By zzq
 Author                  zhengzhiqiang\@vazyme.com
 Data                    2022.1
-Version                 V1.2
+Version                 V1.4
 Usage                   perl $0 bamFile countFile
 
 
@@ -41,21 +39,18 @@ USAGE
 exit 0
 }
 usage() if(@ARGV<2);
-#picard的方向判断算法 除FR以外皆划入异常
+# picard的方向判断算法 除FR以外皆划入异常
 sub getOrientation($getReadReverseFlag,$getMateReverseFlag,$cigar,$position,$matePosition,$insertSize){
   my $orientation;
-  #tandem
+  # tandem
   if($getReadReverseFlag == $getMateReverseFlag){
     $orientation = 0;
   }else{
     my $positiveStart;
     my $negativeStart;
-    my $matchLength;
     if($getReadReverseFlag){
-      my @match = $cigar =~/(\d+)[DMNX]/g;
-        foreach my $i(@match){
-          $matchLength += $i;
-        }
+        my @match = $cigar =~/(\d+)[DMNX]/g;
+        my $matchLength = sum @match;
         $positiveStart = $matePosition;
         $negativeStart = $position + $matchLength -1;
     }else{
@@ -69,58 +64,86 @@ sub getOrientation($getReadReverseFlag,$getMateReverseFlag,$cigar,$position,$mat
 my $bamFile = shift;
 my $countFile = shift;
 my $head = `samtools view -H $bamFile`;
-my $totalReads = 0;
 my $count_xa = 0;
 my $count_multi = 0;
-my $count_unmap = 0;
 my $count_abnormal = 0;
 my $count_normal = 0;
 my @insert;
 my %hash;
-open COUNT,">$countFile";
-open XA,">./$bamFile.XA.sam";
+`mkdir -m 777 out_v1.2`;
+open COUNT,">out_v1.2/$countFile";
+open XA,">out_v1.2/$bamFile.XA.sam";
 print XA $head;
-open MULTI,">./$bamFile.MULTI.sam";
+open MULTI,">out_v1.2/$bamFile.MULTI.sam";
 print MULTI $head;
-open UMAP,">./$bamFile.UMAP.sam";
+open UMAP,">out_v1.2/$bamFile.UMAP.sam";
 print UMAP $head;
-open NORMAL,">./$bamFile.NORMAL.sam";
+open NORMAL,">out_v1.2/$bamFile.NORMAL.sam";
 print NORMAL $head;
-open ABNORMAL,">./$bamFile.ABNORMAL.sam";
+open ABNORMAL,">out_v1.2/$bamFile.ABNORMAL.sam";
 print ABNORMAL $head;
-print strftime("First time read bamFile begin: %H:%M:%S\n", localtime);
-open BAM,"samtools view $bamFile|" or  die "ERROR:Can't open file with samtools,please check your file and run 'samtools' to make sure that samtools is available \n";
-#第一次读bam 得到绝对中位差
-while(<BAM>){
-    my @line = split /\t/;
-    my $flag = $line[1];
-    my $insertSize = abs $line[8];
-    my $binnaryFlagString = sprintf("%b",$flag);
-    my @binFlag =split //,$binnaryFlagString;
-    @binFlag = reverse @binFlag;
-    my $getReadPairedFlag = $binFlag[0];
-    my $getReadUnmappedFlag = $binFlag[2];
-    my $getMateUnmappedFlag = $binFlag[3];
-    my $getFirstPairFlag = $binFlag[6];
-    my $getSecondaryFlag = $binFlag[8];
-    my $getDupFlag = $binFlag[10];
-    my $getSupplementaryAlignmentFlag = $binFlag[11];
-    next if($getFirstPairFlag || !$getReadPairedFlag || $getSecondaryFlag || $getSupplementaryAlignmentFlag || $getDupFlag || $getReadUnmappedFlag  || $getMateUnmappedFlag || $insertSize == 0);
-    push (@insert,$insertSize);
+print strftime("get max insert_size: %H:%M:%S\n", localtime);
+# Insert Size #
+my ($median,$mad,$mean);
+if ( -e "/mnt/data/Users/zzq/Abnormal_align/zzq/cut/g4blast/test/pi_out/P6-1.CollectInsertSizeMetrics"){
+	open (IN,"/mnt/data/Users/zzq/Abnormal_align/zzq/cut/g4blast/test/pi_out/P6-1.CollectInsertSizeMetrics");
+	while(<IN>){
+		chomp;
+        next if(/^#/);
+		if($_=~/^MEDIAN_INSERT_SIZE/){
+			$_=<IN>;chomp;
+			my @data=split("\t",$_);
+            $median = $data[0];
+            $mad = $data[1];
+            $mean = $data[4];
+            last;
+		}
+	}
+	close IN;
 }
-close BAM;
-print strftime("First time read bamFile complete，get max insertSize: %H:%M:%S\n", localtime);
-my $record = Statistics::Descriptive::Full->new();
-$record->add_data(\@insert);
-my $median = $record->median();
-my $mad = $record->median_absolute_deviation();
 my $max_insertSize = $median + 10 * $mad;
 print "max insertSize is $max_insertSize\n";
-print strftime("Second time read bamFile begin: %H:%M:%S\n", localtime);
+# ESTIMATED LIBRARY SIZE #
+my ($librarySize);
+if ( -e "/mnt/data/Users/zzq/Abnormal_align/zzq/cut/g4blast/test/pi_out/P6-1.EstimateLibraryComplexity"){
+	open (IN,"/mnt/data/Users/zzq/Abnormal_align/zzq/cut/g4blast/test/pi_out/P6-1.EstimateLibraryComplexity");
+	while(<IN>){
+		if($_=~/^LIBRARY\s+/){
+			$_=<IN>;chomp;
+			my @data=split(/\t/,$_);
+            $librarySize = $data[9];
+			# print OUT "Est_Library_Size\t$data[9]\n";
+#			print OUT "ESTIMATED LIBRARY SIZE\t$data[9]\n";
+		}
+	}
+	close IN;
+}
+ # 调用Samtools stats 进行各项指标统计
+my ($clean_reads,$mapped_reads,$dup_reads,$clean_bases,$mapped_bases,$mismatch_bases,$uniq_reads,$mean_insert_size);
+open IN,"samtools stats $bamFile|grep ^SN | cut -f 2-|";
+while(<IN>){
+  chomp;
+  		if (/raw total sequences:\s+([0-9]+)/){
+			$clean_reads = $1;
+		}elsif (/reads mapped:\s+([0-9]+)/){
+			$mapped_reads = $1;
+		}elsif (/reads duplicated:\s+([0-9]+)/){
+			$dup_reads = $1;
+		}elsif (/total length:\s+([0-9]+)/){
+			$clean_bases = $1;
+		}elsif (/bases mapped \(cigar\):\s+([0-9]+)/){
+			$mapped_bases = $1;
+		}elsif (/mismatches:\s+([0-9]+)/){
+			$mismatch_bases = $1;
+		}elsif (/insert size average:\s+(\S+)/){
+            $mean_insert_size = $1;
+        }
+}
+
+print strftime(" read bamFile begin: %H:%M:%S\n", localtime);
 open BAM,"samtools view $bamFile|" or  die "ERROR:Can't open file with samtools,please check your file and run 'samtools' to make sure that samtools is available \n";
-#第二次读bam 得到统计表并拆分bam
-my $base = 0;
-my $mappedreads =0;
+# 读bam 得到统计表并拆分bam
+
 while(<BAM>){
     chomp;
     my @line = split /\t/;
@@ -143,25 +166,21 @@ while(<BAM>){
     my $getFirstPairFlag = $binFlag[6];
     my $getSecondaryFlag = $binFlag[8];
     my $getReadFailsVendorQualityCheckFlag = $binFlag[9];
+    my $getDupFlag = $binFlag[10];
     my $getSupplementaryAlignmentFlag = $binFlag[11];
     my $orientation;
-    #统计多处比对
+    # 统计多处比对
     if($getSecondaryFlag || $getSupplementaryAlignmentFlag){
         ++ $count_multi;
         print MULTI "$_\n";
         next;
     }
-    $base+=length $seq;
-    ++ $totalReads;
-    ++ $mappedreads if(!$getReadUnmappedFlag);
-    #统计UNmap数
+    # 统计UNmap insert数
     if($getReadUnmappedFlag || $getMateUnmappedFlag){
-        ++ $count_unmap;
         print UMAP "$_\n";
         next;
     }
-    
-        # 存入reads
+    # 存入reads
     if($getFirstPairFlag){
         $hash{$line[0]}{data}{r1} = $_;
     }else{
@@ -212,15 +231,10 @@ while(<BAM>){
             print ABNORMAL $hash{$line[0]}{data}{r1}."\n".$hash{$line[0]}{data}{r2}."\n";
         }
 }
-print strftime("Second time read bamFile complete: %H:%M:%S\n", localtime);
-my $total_insert = $totalReads/2;
-my $pct_normal = sprintf "%.2f%%",100 * $count_normal/$total_insert;
-my $pct_abnormal = sprintf "%.2f%%",100 * $count_abnormal/$total_insert;
-my $pct_unmap = sprintf "%.2f%%",100 * $count_unmap/$total_insert;
-my $pct_multi = sprintf "%.2f%%",100 * $count_multi/$total_insert;
-my $count_unmap_insert = $count_unmap/2;
+print strftime(" read bamFile complete: %H:%M:%S\n", localtime);
 
-print strftime("Hash begin: %H:%M:%S\n", localtime);
+
+print strftime("Classify Abnormal begin: %H:%M:%S\n", localtime);
 #对异常情况进行分类
 my $count_sa;
 my $count_insert;
@@ -228,15 +242,15 @@ my $count_contig;
 my $count_notfr;
 my $count_others;
 my $count_chimeras;
-open INSERT,">./$bamFile.INSERT.sam";
+open INSERT,">out_v1.2/$bamFile.INSERT.sam";
 print INSERT $head;
-open CONTIG,">./$bamFile.CONTIG.sam";
+open CONTIG,">out_v1.2/$bamFile.CONTIG.sam";
 print CONTIG $head;
-open SA,">./$bamFile.SA.sam";
+open SA,">out_v1.2/$bamFile.SA.sam";
 print SA $head;
-open FR,">./$bamFile.FR.sam";
+open FR,">out_v1.2/$bamFile.FR.sam";
 print FR $head;
-open OTHERS,">./$bamFile.OTHERS.sam" or die "fuck\n";
+open OTHERS,">out_v1.2/$bamFile.OTHERS.sam" or die ">out_v1.2/$bamFile.OTHERS.sam";
 print OTHERS $head;
 foreach my $key (keys %hash){
     my $r1 = $hash{$key}{data}{r1};
@@ -299,6 +313,14 @@ foreach my $key (keys %hash){
         delete $hash{abnormal}{$line1[0]};
     }
 }
-my $pct_chimeras=sprintf "%.2f%%",100 * $count_chimeras/$total_insert;
-print strftime("Hash end: %H:%M:%S\n", localtime);
-print COUNT "TOTAL_READS\t$totalReads\nTOTAL_BASES\t$base\nMAPPED_READS\t$mappedreads\nCOUNT_NORMAL_INSERT\t$count_normal($pct_normal)\nCOUNT_ABNORMAL_INSERT\t$count_abnormal($pct_abnormal)\nCOUNT_UNMAP_INSERT\t$count_unmap_insert($pct_unmap)\nCOUNT_SECONDERY\t$count_multi\nCOUNT_XATag_INSERT\t$count_xa\nCOUNT_CHIMERAS_INSERT\t$count_chimeras($pct_chimeras)\n\nCOUNT_SATag_INSERT\t$count_sa\nCOUNT_NOT_FR\t$count_notfr\nCOUNT_OVERSIZE(over than $max_insertSize)\t$count_insert\nCOUNT_DIFF_CONTIG\t$count_contig\nCOUNT_OTHERS\t$count_others";
+print strftime("Classify Abnormal end: %H:%M:%S\n", localtime);
+my $total_insert = $clean_reads/2;
+my $pct_normal = sprintf "%.2f%%",100 * $count_normal/$total_insert;
+my $pct_abnormal = sprintf "%.2f%%",100 * $count_abnormal/$total_insert;
+my $pct_multi = sprintf "%.2f%%",100 * $count_multi/$total_insert;
+my $pct_chimeras=sprintf "%.2f%%",100 * $count_chimeras/$clean_reads;
+my $mapping_rate=sprintf("%.2f",$mapped_reads/$clean_reads*100);
+my $dup_rate=sprintf("%.2f",$dup_reads/$mapped_reads*100);
+my $uniq_rate=sprintf("%.2f",$uniq_reads/$mapped_reads*100);
+my $mismatch_rate=sprintf("%.2f",$mismatch_bases/$mapped_bases*100);
+print COUNT "CLEAN_READS\t$clean_reads\nCLEAN_BASES\t$clean_bases\nMAPPED_READS\t$mapped_reads\nMAPPED_BASES\t$mapped_bases\nMAPPED_RATE\t$mapping_rate\nDUP_READS\t$dup_reads\nDUP_RATE\t$dup_rate\nMISMATCH_BASES\t$mismatch_bases\nMISMATCH_RATE\t$mismatch_rate\nMEDIAN_INSERT_SIZE\t$median\nMEAN_INSERT_SIZE\t$mean\nLIBRARY_Complexity\t$librarySize\n\nCOUNT_ALL_INSERT\t$total_insert\nCOUNT_NORMAL_INSERT\t$count_normal($pct_normal)\nCOUNT_ABNORMAL_INSERT\t$count_abnormal($pct_abnormal)\nCOUNT_SECONDERY\t$count_multi\nCOUNT_XATag_INSERT\t$count_xa\nCOUNT_CHIMERAS_INSERT\t$count_chimeras($pct_chimeras)\n\nCOUNT_SATag_INSERT\t$count_sa\nCOUNT_NOT_FR\t$count_notfr\nCOUNT_OVERSIZE(over than $max_insertSize)\t$count_insert\nCOUNT_DIFF_CONTIG\t$count_contig\nCOUNT_OTHERS\t$count_others";
