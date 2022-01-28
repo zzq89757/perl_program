@@ -1,0 +1,30 @@
+use Statistics::Descriptive;
+my $bamFile = shift;
+open BAM,"samtools view -F 256 $bamFile|" or  die "ERROR:Can't open file with samtools,please check your file and run 'samtools' to make sure that samtools is available \n";
+my @insert;
+while(<BAM>){
+    my @line = split /\t/;
+    my $flag = $line[1];
+    my $insertSize = abs $line[8];
+    my $binnaryFlagString = sprintf("%b",$flag);
+    my @binFlag =split //,$binnaryFlagString;
+    @binFlag = reverse @binFlag;
+    my $getReadPairedFlag = $binFlag[0];
+    my $getReadUnmappedFlag = $binFlag[2];
+    my $getMateUnmappedFlag = $binFlag[3];
+    my $getFirstPairFlag = $binFlag[6];
+    my $getSecondaryFlag = $binFlag[8]; 
+    my $getDupFlag = $binFlag[10];
+    my $getSupplementaryAlignmentFlag = $binFlag[11];
+    next if($getFirstPairFlag || $getReadUnmappedFlag ||  $getMateUnmappedFlag ||!$getReadPairedFlag || $getSecondaryFlag || $getSupplementaryAlignmentFlag || $getDupFlag ||  $insertSize == 0 );
+    push (@insert,$insertSize);
+}
+my $record = Statistics::Descriptive::Full->new();
+$record->add_data(\@insert);
+my $median = $record->median();
+my $mad = $record->median_absolute_deviation();
+my $max_insertSize = $median + 10 * $mad;
+print $median;
+print "\n";
+print "$mad\n";
+print $max_insertSize;
