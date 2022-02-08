@@ -10,13 +10,16 @@ while(my $id1 = <IN>){
   my $rid = (split/_/,$id1)[0];
   $hash{data}{$rid}="$id1$seq1$id2$seq2";
   $count_all++;
+  #寻找poly结构 此处划分标准为四个及以上相同碱基
   if($seq1=~/([AGCT])\1{3}/ ||$seq2=~/([AGCT])\1{3}/){
     # print "$id1$seq1";
     $count_poly++;
     next;
   }
-  if($seq1=~/([ACGT][ACTG])\1{2}/ || $seq2=~/([ACGT][ACTG])\1{2}/){
+  # if($seq1=~/([ACGT][ACTG])\1{2}/ || $seq2=~/([ACGT][ACTG])\1{2}/){
+  if($seq1=~/([ACGT]{2,30})\1{2}/ || $seq2=~/([ACGT]{2,30})\1{2}/){
     $count_repeat++;
+        # print "$id1$seq1";
     next;
   }
   my $msg1 = (split/_/,$id1)[-1];
@@ -27,7 +30,7 @@ while(my $id1 = <IN>){
       $hash{base1}{$item}=1
     }
   }
-  my @sort1 =  sort keys %{$hash{base1}};
+  my @sort1 = sort keys %{$hash{base1}};
   delete $hash{base1};
   my @base2 = $msg2 =~ /\d+([AGCT])/g;
   for my $item (@base2){
@@ -37,10 +40,12 @@ while(my $id1 = <IN>){
   }
   my @sort2 =  sort keys %{$hash{base2}};
   delete $hash{base2};
+  #此处判断存在漏检
   if(@base1>1&&@sort1==1 || @base2>1&&@sort2==1){
     # print "$id1$seq1";
     $count_mutation++;
-  }else{
+  }
+  else{
     print STDERR $hash{data}{$rid}
   }
 }
