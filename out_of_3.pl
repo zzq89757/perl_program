@@ -17,7 +17,7 @@ while(my $id1 = <IN>){
     next;
   }
   # if($seq1=~/([ACGT][ACTG])\1{2}/ || $seq2=~/([ACGT][ACTG])\1{2}/){
-  if($seq1=~/([ACGT]{2,30})\1{2}/ || $seq2=~/([ACGT]{2,30})\1{2}/){
+  if($seq1=~/([ACGT]{2,50})\1{2}/ || $seq2=~/([ACGT]{2,50})\1{2}/){
     $count_repeat++;
         # print "$id1$seq1";
     next;
